@@ -234,22 +234,25 @@ import (
 )
 
 db, _ := sql.Open("pgx", dsn)
-exec := dbtx.NewSQLDBExecutor(db) // implements SQLConn and SqlTxExecutor
+exec := dbtx.NewSQLDBExecutor(db, dbtx.SQLWithIsolationLevel(sql.LevelSerializable))
+// implements SQLConn and SqlTxExecutor
 
 err := exec.InTx(ctx, func(ctx context.Context) error {
     _, err := exec.ExecContext(ctx, "INSERT INTO users (id, name) VALUES ($1, $2)", "u-1", "Alice")
     return err
-}, dbtx.SQLWithIsolationLevel(sql.LevelSerializable))
+})
 ```
 
 One semantic difference: `database/sql` has no portable savepoint API, so a nested `InTx` does **not** open a savepoint — it reuses the existing transaction. The orchestrator pattern still works (everything still ends up in one tx), but you lose the ability to roll back just the inner step. An error from any inner `InTx` aborts the whole tx.
 
 ## Transaction options
 
+Options are configured **on the executor at construction time** and reused on every top-level `InTx` / `WithTx`. The service-facing `PgxTxExecutor` / `SqlTxExecutor` interfaces stay free of pgx / `database/sql` types — services just see `InTx(ctx, fn)`.
+
 pgx — wraps `pgx.TxOptions`:
 
 ```go
-exec.InTx(ctx, fn,
+exec := dbtx.NewPgxPoolExecutor(pool,
     dbtx.WithIsolationLevel(pgx.Serializable),
     dbtx.WithAccessMode(pgx.ReadWrite),
     dbtx.WithDeferrableMode(pgx.Deferrable),
@@ -259,13 +262,13 @@ exec.InTx(ctx, fn,
 `database/sql` — wraps `sql.TxOptions`:
 
 ```go
-exec.InTx(ctx, fn,
+exec := dbtx.NewSQLDBExecutor(db,
     dbtx.SQLWithIsolationLevel(sql.LevelSerializable),
     dbtx.SQLWithReadOnly(true),
 )
 ```
 
-Default isolation is `ReadCommitted` on both sides. Options passed to a **nested** `InTx` are ignored — for pgx, savepoints don't accept `TxOptions`; for `database/sql`, the outer tx is already open.
+Default isolation is `ReadCommitted` on both sides. Nested calls don't take options — for pgx, savepoints don't accept `TxOptions`; for `database/sql`, the outer tx is already open. If you need different transaction profiles in the same wiring (e.g. one service Serializable, another ReadCommitted), construct multiple executors over the same underlying pool/DB and inject the right one into each service.
 
 ## Why `PgxConn` / `SQLConn` exist (and what they let you do)
 
@@ -320,7 +323,7 @@ err := exec.WithTx(ctx, func(ctx context.Context, tx pgx.Tx) error {
 })
 ```
 
-Same semantics as `InTx`: nested calls join the outer tx, fn's error rolls back, nil commits, options on a nested call are ignored. Reach for `WithTx` only when the explicit `tx` argument is required; otherwise stick to `InTx` and keep call sites tx-agnostic.
+Same semantics as `InTx`: nested calls join the outer tx, fn's error rolls back, nil commits, options come from the executor's construction. Reach for `WithTx` only when the explicit `tx` argument is required; otherwise stick to `InTx` and keep call sites tx-agnostic.
 
 The `database/sql` form mirrors it:
 

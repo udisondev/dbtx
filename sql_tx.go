@@ -6,14 +6,13 @@ import (
 	"fmt"
 )
 
-// SQLOpt configures a database/sql transaction opened by InTx.
-type SQLOpt func(*sqlOpt)
+// SQLOpt configures the database/sql transaction options held by an executor.
+// Apply at construction time (NewSQLDBExecutor / NewSQLConnExecutor); the same
+// options are reused on every top-level InTx / WithTx opened through the
+// executor.
+type SQLOpt func(*sql.TxOptions)
 
 type sqlTxKey struct{}
-
-type sqlOpt struct {
-	sql.TxOptions
-}
 
 type sqlBeginTxFn func(ctx context.Context, opts *sql.TxOptions) (*sql.Tx, error)
 
@@ -30,30 +29,33 @@ func SQLWithTx(ctx context.Context, tx *sql.Tx) context.Context {
 
 // SQLWithIsolationLevel sets sql.TxOptions.Isolation.
 func SQLWithIsolationLevel(l sql.IsolationLevel) SQLOpt {
-	return func(o *sqlOpt) { o.Isolation = l }
+	return func(o *sql.TxOptions) { o.Isolation = l }
 }
 
 // SQLWithReadOnly sets sql.TxOptions.ReadOnly.
 func SQLWithReadOnly(ro bool) SQLOpt {
-	return func(o *sqlOpt) { o.ReadOnly = ro }
+	return func(o *sql.TxOptions) { o.ReadOnly = ro }
+}
+
+func buildSQLTxOptions(opts []SQLOpt) sql.TxOptions {
+	o := sql.TxOptions{Isolation: sql.LevelReadCommitted}
+	for _, apply := range opts {
+		apply(&o)
+	}
+	return o
 }
 
 func sqlWithTx(
 	ctx context.Context,
 	begin sqlBeginTxFn,
+	txOpts sql.TxOptions,
 	fn func(ctx context.Context, tx *sql.Tx) error,
-	opts ...SQLOpt,
 ) error {
 	if outer, ok := SQLFromCtx(ctx); ok {
 		return fn(ctx, outer)
 	}
 
-	opt := sqlOpt{TxOptions: sql.TxOptions{Isolation: sql.LevelReadCommitted}}
-	for _, apply := range opts {
-		apply(&opt)
-	}
-
-	tx, err := begin(ctx, &opt.TxOptions)
+	tx, err := begin(ctx, &txOpts)
 	if err != nil {
 		return fmt.Errorf("begin tx: %w", err)
 	}
@@ -68,10 +70,10 @@ func sqlWithTx(
 func sqlInTx(
 	ctx context.Context,
 	begin sqlBeginTxFn,
+	txOpts sql.TxOptions,
 	fn func(ctx context.Context) error,
-	opts ...SQLOpt,
 ) error {
-	return sqlWithTx(ctx, begin, func(ctx context.Context, _ *sql.Tx) error {
+	return sqlWithTx(ctx, begin, txOpts, func(ctx context.Context, _ *sql.Tx) error {
 		return fn(ctx)
-	}, opts...)
+	})
 }

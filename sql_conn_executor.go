@@ -10,25 +10,28 @@ import (
 // explicit bypass.
 type SQLConnExecutor struct {
 	*sql.Conn
+	txOpts sql.TxOptions
 }
 
 var _ SQLConn = (*SQLConnExecutor)(nil)
 
-// NewSQLConnExecutor wraps conn.
-func NewSQLConnExecutor(conn *sql.Conn) *SQLConnExecutor {
-	return &SQLConnExecutor{Conn: conn}
+// NewSQLConnExecutor wraps conn. The opts configure the sql.TxOptions used
+// for every top-level transaction opened via InTx / WithTx (nested calls
+// reuse the outer tx and ignore options). Default isolation is
+// sql.LevelReadCommitted.
+func NewSQLConnExecutor(conn *sql.Conn, opts ...SQLOpt) *SQLConnExecutor {
+	return &SQLConnExecutor{Conn: conn, txOpts: buildSQLTxOptions(opts)}
 }
 
 // InTx runs fn in a transaction. If ctx carries a tx, fn reuses it;
-// otherwise a new top-level tx is opened with opts. fn's error triggers
-// rollback, nil triggers commit. Nested InTx does not create a savepoint;
-// options on a nested call are ignored.
+// otherwise a new top-level tx is opened with the options the executor was
+// configured with. fn's error triggers rollback, nil triggers commit. Nested
+// InTx does not create a savepoint.
 func (e *SQLConnExecutor) InTx(
 	ctx context.Context,
 	fn func(ctx context.Context) error,
-	opts ...SQLOpt,
 ) error {
-	return sqlInTx(ctx, e.Conn.BeginTx, fn, opts...)
+	return sqlInTx(ctx, e.Conn.BeginTx, e.txOpts, fn)
 }
 
 // WithTx is InTx that also hands the active *sql.Tx to fn — the one it just
@@ -39,9 +42,8 @@ func (e *SQLConnExecutor) InTx(
 func (e *SQLConnExecutor) WithTx(
 	ctx context.Context,
 	fn func(ctx context.Context, tx *sql.Tx) error,
-	opts ...SQLOpt,
 ) error {
-	return sqlWithTx(ctx, e.Conn.BeginTx, fn, opts...)
+	return sqlWithTx(ctx, e.Conn.BeginTx, e.txOpts, fn)
 }
 
 func (e *SQLConnExecutor) ExecContext(

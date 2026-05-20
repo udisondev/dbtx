@@ -9,14 +9,13 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// PgxOpt configures the pgx transaction opened by InTx.
-type PgxOpt func(*pgxOpt)
+// PgxOpt configures the pgx transaction options held by an executor. Apply at
+// construction time (NewPgxPoolExecutor / NewPgxConnExecutor); the same
+// options are reused on every top-level InTx / WithTx opened through the
+// executor.
+type PgxOpt func(*pgx.TxOptions)
 
 type pgxTxKey struct{}
-
-type pgxOpt struct {
-	pgx.TxOptions
-}
 
 type pgxBeginTxFn func(ctx context.Context, txOptions pgx.TxOptions) (pgx.Tx, error)
 
@@ -33,29 +32,37 @@ func WithTx(ctx context.Context, tx pgx.Tx) context.Context {
 
 // WithIsolationLevel sets pgx.TxOptions.IsoLevel.
 func WithIsolationLevel(l pgx.TxIsoLevel) PgxOpt {
-	return func(o *pgxOpt) { o.IsoLevel = l }
+	return func(o *pgx.TxOptions) { o.IsoLevel = l }
 }
 
 // WithAccessMode sets pgx.TxOptions.AccessMode.
 func WithAccessMode(m pgx.TxAccessMode) PgxOpt {
-	return func(o *pgxOpt) { o.AccessMode = m }
+	return func(o *pgx.TxOptions) { o.AccessMode = m }
 }
 
 // WithBeginQuery sets pgx.TxOptions.BeginQuery.
 func WithBeginQuery(q string) PgxOpt {
-	return func(o *pgxOpt) { o.BeginQuery = q }
+	return func(o *pgx.TxOptions) { o.BeginQuery = q }
 }
 
 // WithDeferrableMode sets pgx.TxOptions.DeferrableMode.
 func WithDeferrableMode(m pgx.TxDeferrableMode) PgxOpt {
-	return func(o *pgxOpt) { o.DeferrableMode = m }
+	return func(o *pgx.TxOptions) { o.DeferrableMode = m }
+}
+
+func buildPgxTxOptions(opts []PgxOpt) pgx.TxOptions {
+	o := pgx.TxOptions{IsoLevel: pgx.ReadCommitted}
+	for _, apply := range opts {
+		apply(&o)
+	}
+	return o
 }
 
 func pgxWithTx(
 	ctx context.Context,
 	begin pgxBeginTxFn,
+	txOpts pgx.TxOptions,
 	fn func(ctx context.Context, tx pgx.Tx) error,
-	opts ...PgxOpt,
 ) error {
 	if outer, ok := FromCtx(ctx); ok {
 		sp, err := outer.Begin(ctx)
@@ -70,12 +77,7 @@ func pgxWithTx(
 		return sp.Commit(ctx)
 	}
 
-	opt := pgxOpt{TxOptions: pgx.TxOptions{IsoLevel: pgx.ReadCommitted}}
-	for _, apply := range opts {
-		apply(&opt)
-	}
-
-	tx, err := begin(ctx, opt.TxOptions)
+	tx, err := begin(ctx, txOpts)
 	if err != nil {
 		return fmt.Errorf("begin tx: %w", err)
 	}
@@ -90,10 +92,10 @@ func pgxWithTx(
 func pgxInTx(
 	ctx context.Context,
 	begin pgxBeginTxFn,
+	txOpts pgx.TxOptions,
 	fn func(ctx context.Context) error,
-	opts ...PgxOpt,
 ) error {
-	return pgxWithTx(ctx, begin, func(ctx context.Context, _ pgx.Tx) error {
+	return pgxWithTx(ctx, begin, txOpts, func(ctx context.Context, _ pgx.Tx) error {
 		return fn(ctx)
-	}, opts...)
+	})
 }

@@ -21,6 +21,7 @@ import (
 	watermillSQL "github.com/ThreeDotsLabs/watermill-sql/v4/pkg/sql"
 	"github.com/ThreeDotsLabs/watermill/components/cqrs"
 	"github.com/ThreeDotsLabs/watermill/components/forwarder"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/udisondev/dbtx"
 )
@@ -37,12 +38,14 @@ type OrderPlaced struct {
 	Total   int64
 }
 
-type EventPublisher interface {
-	Publish(ctx context.Context, event any) error
+// OrderExecer is the narrow query surface the repo actually uses.
+// *dbtx.PgxPoolExecutor satisfies it (so does the raw *pgxpool.Pool).
+type OrderExecer interface {
+	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
 }
 
 type OrderRepo struct {
-	db dbtx.PgxConn
+	db OrderExecer
 }
 
 func (r *OrderRepo) Save(ctx context.Context, o Order) error {
@@ -51,14 +54,25 @@ func (r *OrderRepo) Save(ctx context.Context, o Order) error {
 	return err
 }
 
+// TxRunner is the narrow tx-boundary surface the service depends on.
+// *dbtx.PgxPoolExecutor satisfies it. Note: no pgx / dbtx types in the
+// signature — the service is decoupled from the underlying driver.
+type TxRunner interface {
+	InTx(ctx context.Context, fn func(ctx context.Context) error) error
+}
+
+type EventPublisher interface {
+	Publish(ctx context.Context, event any) error
+}
+
 type OrderService struct {
-	exec   dbtx.PgxTxExecutor
+	tx     TxRunner
 	orders *OrderRepo
 	events EventPublisher
 }
 
 func (s *OrderService) Place(ctx context.Context, o Order) error {
-	return s.exec.InTx(ctx, func(ctx context.Context) error {
+	return s.tx.InTx(ctx, func(ctx context.Context) error {
 		if err := s.orders.Save(ctx, o); err != nil {
 			return err
 		}
@@ -116,7 +130,7 @@ func main() {
 	}
 
 	svc := &OrderService{
-		exec:   pgxExec,
+		tx:     pgxExec,
 		orders: &OrderRepo{db: pgxExec},
 		events: bus,
 	}

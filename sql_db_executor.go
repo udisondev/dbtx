@@ -10,25 +10,28 @@ import (
 // explicit bypass.
 type SQLDBExecutor struct {
 	*sql.DB
+	txOpts sql.TxOptions
 }
 
 var _ SQLConn = (*SQLDBExecutor)(nil)
 
-// NewSQLDBExecutor wraps db.
-func NewSQLDBExecutor(db *sql.DB) *SQLDBExecutor {
-	return &SQLDBExecutor{DB: db}
+// NewSQLDBExecutor wraps db. The opts configure the sql.TxOptions used for
+// every top-level transaction opened via InTx / WithTx (nested calls reuse
+// the outer tx and ignore options). Default isolation is
+// sql.LevelReadCommitted.
+func NewSQLDBExecutor(db *sql.DB, opts ...SQLOpt) *SQLDBExecutor {
+	return &SQLDBExecutor{DB: db, txOpts: buildSQLTxOptions(opts)}
 }
 
 // InTx runs fn in a transaction. If ctx carries a tx, fn reuses it;
-// otherwise a new top-level tx is opened with opts. fn's error triggers
-// rollback, nil triggers commit. Nested InTx does not create a savepoint;
-// options on a nested call are ignored.
+// otherwise a new top-level tx is opened with the options the executor was
+// configured with. fn's error triggers rollback, nil triggers commit. Nested
+// InTx does not create a savepoint.
 func (e *SQLDBExecutor) InTx(
 	ctx context.Context,
 	fn func(ctx context.Context) error,
-	opts ...SQLOpt,
 ) error {
-	return sqlInTx(ctx, e.DB.BeginTx, fn, opts...)
+	return sqlInTx(ctx, e.DB.BeginTx, e.txOpts, fn)
 }
 
 // WithTx is InTx that also hands the active *sql.Tx to fn — the one it just
@@ -39,9 +42,8 @@ func (e *SQLDBExecutor) InTx(
 func (e *SQLDBExecutor) WithTx(
 	ctx context.Context,
 	fn func(ctx context.Context, tx *sql.Tx) error,
-	opts ...SQLOpt,
 ) error {
-	return sqlWithTx(ctx, e.DB.BeginTx, fn, opts...)
+	return sqlWithTx(ctx, e.DB.BeginTx, e.txOpts, fn)
 }
 
 func (e *SQLDBExecutor) ExecContext(

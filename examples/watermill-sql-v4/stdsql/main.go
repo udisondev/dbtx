@@ -44,12 +44,14 @@ type OrderPlaced struct {
 	Total   int64
 }
 
-type EventPublisher interface {
-	Publish(ctx context.Context, event any) error
+// OrderExecer is the narrow query surface the repo actually uses.
+// *dbtx.SQLDBExecutor satisfies it (so does the raw *sql.DB).
+type OrderExecer interface {
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
 }
 
 type OrderRepo struct {
-	db dbtx.SQLConn
+	db OrderExecer
 }
 
 func (r *OrderRepo) Save(ctx context.Context, o Order) error {
@@ -58,14 +60,25 @@ func (r *OrderRepo) Save(ctx context.Context, o Order) error {
 	return err
 }
 
+// TxRunner is the tx-boundary contract the service depends on. Defined as a
+// plain function type — the service takes a callable, no interface required.
+// *dbtx.SQLDBExecutor's InTx method matches this signature, so pass it as a
+// method value at wiring time. The service stays free of dbtx / database/sql
+// types in its dependencies.
+type TxRunner func(ctx context.Context, fn func(ctx context.Context) error) error
+
+type EventPublisher interface {
+	Publish(ctx context.Context, event any) error
+}
+
 type OrderService struct {
-	exec   dbtx.SqlTxExecutor
+	inTx   TxRunner
 	orders *OrderRepo
 	events EventPublisher
 }
 
 func (s *OrderService) Place(ctx context.Context, o Order) error {
-	return s.exec.InTx(ctx, func(ctx context.Context) error {
+	return s.inTx(ctx, func(ctx context.Context) error {
 		if err := s.orders.Save(ctx, o); err != nil {
 			return err
 		}
@@ -123,7 +136,7 @@ func main() {
 	}
 
 	svc := &OrderService{
-		exec:   sqlExec,
+		inTx:   sqlExec.InTx,
 		orders: &OrderRepo{db: sqlExec},
 		events: bus,
 	}
