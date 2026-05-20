@@ -95,3 +95,19 @@ func (s *SQLConnSuite) TestExecRoutedThroughTx() {
 	})
 	s.Require().NoError(err)
 }
+
+func (s *SQLConnSuite) TestWithTx_TxMatchesCtx() {
+	err := s.exec.WithTx(s.ctx, func(ctx context.Context, tx *sql.Tx) error {
+		fromCtx, ok := dbtx.SQLFromCtx(ctx)
+		s.Require().True(ok)
+		s.Same(tx, fromCtx)
+		_, execErr := tx.ExecContext(ctx, "INSERT INTO accounts_sql_conn VALUES ('A', 100)")
+		return execErr
+	})
+	s.Require().NoError(err)
+
+	var balance int
+	err = s.conn.QueryRowContext(s.ctx, "SELECT balance FROM accounts_sql_conn WHERE id='A'").Scan(&balance)
+	s.Require().NoError(err)
+	s.Equal(100, balance)
+}

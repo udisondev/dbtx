@@ -86,3 +86,19 @@ func (s *PgxConnSuite) TestExecRoutedThroughTx() {
 	})
 	s.Require().NoError(err)
 }
+
+func (s *PgxConnSuite) TestWithTx_TxMatchesCtx() {
+	err := s.exec.WithTx(s.ctx, func(ctx context.Context, tx pgx.Tx) error {
+		fromCtx, ok := dbtx.FromCtx(ctx)
+		s.Require().True(ok)
+		s.Same(tx, fromCtx)
+		_, execErr := tx.Exec(ctx, "INSERT INTO accounts_pgx_conn VALUES ('A', 100)")
+		return execErr
+	})
+	s.Require().NoError(err)
+
+	var balance int
+	err = s.conn.QueryRow(s.ctx, "SELECT balance FROM accounts_pgx_conn WHERE id='A'").Scan(&balance)
+	s.Require().NoError(err)
+	s.Equal(100, balance)
+}

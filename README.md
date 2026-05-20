@@ -44,7 +44,7 @@ The result: repository signatures don't know transactions exist, service code re
 Three rules to remember:
 
 1. Repositories take `PgxConn` / `SQLConn`. They never see a `tx`.
-2. Services take a `PgxTxExecutor` / `SqlTxExecutor` interface — a single-method surface (`InTx`) decoupled from data access. In production it's a `*PgxPoolExecutor` / `*SQLDBExecutor` (or a `*Conn` variant); in tests it can be a fake that just runs `fn(ctx)` directly.
+2. Services take a `PgxTxExecutor` / `SqlTxExecutor` interface — a narrow `InTx` / `WithTx` surface decoupled from data access. In production it's a `*PgxPoolExecutor` / `*SQLDBExecutor` (or a `*Conn` variant); in tests it can be a fake that just runs `fn(ctx)` directly.
 3. The concrete executor (`*PgxPoolExecutor` etc.) implements both interfaces — it's both a `PgxTxExecutor` (`InTx`) and a `PgxConn` (`Exec`/`Query`/`QueryRow`/...). So at wiring time you construct it once and hand the same value to the service (typed as `PgxTxExecutor`) and the repository (typed as `PgxConn`).
 
 ## Quick example (pgx)
@@ -300,9 +300,12 @@ you can plug in either the raw pool or the executor without changing the type. N
 ```go
 exec.InTx(ctx, func(ctx context.Context) error {
     tx, _ := dbtx.FromCtx(ctx)
-    return tx.SendBatch(ctx, batch).Close()
+    _, err := tx.Prepare(ctx, "stmt1", "SELECT balance FROM wallets WHERE id=$1")
+    return err
 })
 ```
+
+The reverse helpers `dbtx.WithTx(ctx, tx) ctx` and `dbtx.SQLWithTx(ctx, tx) ctx` go the other way — they put an existing `tx` into ctx so that downstream code reading via dbtx-aware executors routes through it. Useful in tests (hand-craft a ctx with a test tx) and at the boundary with code that already opened its own transaction. They are package-level functions and are separate from the `WithTx` *method* documented below; both names coexist because their signatures don't overlap.
 
 ### `WithTx`: same as `InTx`, but hands the tx to the closure
 

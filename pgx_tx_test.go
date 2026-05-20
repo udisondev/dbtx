@@ -152,3 +152,35 @@ func (s *PgxSuite) TestIsolationOption() {
 	}, dbtx.WithIsolationLevel(pgx.Serializable))
 	s.Require().NoError(err)
 }
+
+func (s *PgxSuite) TestWithTx_TxMatchesCtx() {
+	err := s.exec.WithTx(s.ctx, func(ctx context.Context, tx pgx.Tx) error {
+		fromCtx, ok := dbtx.FromCtx(ctx)
+		s.Require().True(ok)
+		s.Same(tx, fromCtx)
+		_, execErr := tx.Exec(ctx, "INSERT INTO accounts_pgx VALUES ('A', 100)")
+		return execErr
+	})
+	s.Require().NoError(err)
+
+	var balance int
+	err = s.pool.QueryRow(s.ctx, "SELECT balance FROM accounts_pgx WHERE id='A'").Scan(&balance)
+	s.Require().NoError(err)
+	s.Equal(100, balance)
+}
+
+func (s *PgxSuite) TestWithTx_NestedGivesSavepoint() {
+	var outerTx pgx.Tx
+	err := s.exec.WithTx(s.ctx, func(ctx context.Context, tx pgx.Tx) error {
+		outerTx = tx
+		return s.exec.WithTx(ctx, func(ctx context.Context, innerTx pgx.Tx) error {
+			// Inner tx must be a savepoint, not the outer tx itself.
+			s.NotSame(outerTx, innerTx)
+			fromCtx, ok := dbtx.FromCtx(ctx)
+			s.Require().True(ok)
+			s.Same(innerTx, fromCtx)
+			return nil
+		})
+	})
+	s.Require().NoError(err)
+}
