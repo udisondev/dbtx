@@ -51,10 +51,10 @@ func WithDeferrableMode(m pgx.TxDeferrableMode) PgxOpt {
 	return func(o *pgxOpt) { o.DeferrableMode = m }
 }
 
-func pgxInTx(
+func pgxWithTx(
 	ctx context.Context,
 	begin pgxBeginTxFn,
-	fn func(ctx context.Context) error,
+	fn func(ctx context.Context, tx pgx.Tx) error,
 	opts ...PgxOpt,
 ) error {
 	if outer, ok := FromCtx(ctx); ok {
@@ -64,7 +64,7 @@ func pgxInTx(
 		}
 		defer sp.Rollback(ctx) //nolint:errcheck
 
-		if err := fn(WithTx(ctx, sp)); err != nil {
+		if err := fn(WithTx(ctx, sp), sp); err != nil {
 			return err
 		}
 		return sp.Commit(ctx)
@@ -81,8 +81,19 @@ func pgxInTx(
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck
 
-	if err := fn(WithTx(ctx, tx)); err != nil {
+	if err := fn(WithTx(ctx, tx), tx); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)
+}
+
+func pgxInTx(
+	ctx context.Context,
+	begin pgxBeginTxFn,
+	fn func(ctx context.Context) error,
+	opts ...PgxOpt,
+) error {
+	return pgxWithTx(ctx, begin, func(ctx context.Context, _ pgx.Tx) error {
+		return fn(ctx)
+	}, opts...)
 }

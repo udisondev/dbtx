@@ -38,14 +38,14 @@ func SQLWithReadOnly(ro bool) SQLOpt {
 	return func(o *sqlOpt) { o.ReadOnly = ro }
 }
 
-func sqlInTx(
+func sqlWithTx(
 	ctx context.Context,
 	begin sqlBeginTxFn,
-	fn func(ctx context.Context) error,
+	fn func(ctx context.Context, tx *sql.Tx) error,
 	opts ...SQLOpt,
 ) error {
-	if _, ok := SQLFromCtx(ctx); ok {
-		return fn(ctx)
+	if outer, ok := SQLFromCtx(ctx); ok {
+		return fn(ctx, outer)
 	}
 
 	opt := sqlOpt{TxOptions: sql.TxOptions{Isolation: sql.LevelReadCommitted}}
@@ -59,8 +59,19 @@ func sqlInTx(
 	}
 	defer tx.Rollback() //nolint:errcheck
 
-	if err := fn(SQLWithTx(ctx, tx)); err != nil {
+	if err := fn(SQLWithTx(ctx, tx), tx); err != nil {
 		return err
 	}
 	return tx.Commit()
+}
+
+func sqlInTx(
+	ctx context.Context,
+	begin sqlBeginTxFn,
+	fn func(ctx context.Context) error,
+	opts ...SQLOpt,
+) error {
+	return sqlWithTx(ctx, begin, func(ctx context.Context, _ *sql.Tx) error {
+		return fn(ctx)
+	}, opts...)
 }

@@ -20,6 +20,7 @@ type SQLConn interface {
 // boundaries. Repositories use SQLConn instead.
 type SqlTxExecutor interface {
 	InTx(ctx context.Context, fn func(ctx context.Context) error, opts ...SQLOpt) error
+	WithTx(ctx context.Context, fn func(ctx context.Context, tx *sql.Tx) error, opts ...SQLOpt) error
 }
 
 var (

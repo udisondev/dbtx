@@ -304,6 +304,31 @@ exec.InTx(ctx, func(ctx context.Context) error {
 })
 ```
 
+### `WithTx`: same as `InTx`, but hands the tx to the closure
+
+When you need to pass the raw transaction to a third-party component that takes a `pgx.Tx` / `*sql.Tx` directly (an outbox publisher, a migration runner, a query builder bound to a tx, …), use `WithTx`. It's `InTx` with one extra parameter: the closure receives `(ctx, tx)` instead of just `(ctx)`. The `tx` is the same one that's been stashed in `ctx` — either the top-level tx just opened, or, when nested, the savepoint just opened on the outer pgx tx (for `database/sql`, the existing outer tx, since there's no portable savepoint).
+
+```go
+err := exec.WithTx(ctx, func(ctx context.Context, tx pgx.Tx) error {
+    if err := outbox.Publish(ctx, tx, event); err != nil { // third-party API wants pgx.Tx
+        return err
+    }
+    return repo.Insert(ctx, row) // repo still uses ctx-routed access, same tx
+})
+```
+
+Same semantics as `InTx`: nested calls join the outer tx, fn's error rolls back, nil commits, options on a nested call are ignored. Reach for `WithTx` only when the explicit `tx` argument is required; otherwise stick to `InTx` and keep call sites tx-agnostic.
+
+The `database/sql` form mirrors it:
+
+```go
+err := exec.WithTx(ctx, func(ctx context.Context, tx *sql.Tx) error {
+    return thirdPartyThatNeedsSQLTx(ctx, tx)
+})
+```
+
+`WithTx` is part of the `PgxTxExecutor` / `SqlTxExecutor` interfaces, so services can depend on the narrow surface and still hand a tx to whatever needs one.
+
 ## Testing
 
 The library is tested against a real Postgres via [testcontainers-go](https://golang.testcontainers.org/) using `testify/suite`. See `pgx_tx_test.go` and `sql_tx_test.go` for the layout: one shared `postgres:16-alpine` container per test package, separate tables per suite for parallel safety, `TRUNCATE` between tests.

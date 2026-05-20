@@ -25,6 +25,7 @@ type PgxConn interface {
 // boundaries. Repositories use PgxConn instead.
 type PgxTxExecutor interface {
 	InTx(ctx context.Context, fn func(ctx context.Context) error, opts ...PgxOpt) error
+	WithTx(ctx context.Context, fn func(ctx context.Context, tx pgx.Tx) error, opts ...PgxOpt) error
 }
 
 var (

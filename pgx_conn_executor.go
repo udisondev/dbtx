@@ -33,6 +33,18 @@ func (e *PgxConnExecutor) InTx(
 	return pgxInTx(ctx, e.Conn.BeginTx, fn, opts...)
 }
 
+// WithTx is InTx that also hands the active pgx.Tx to fn — the same one it
+// just stashed in ctx (or, when nested, the savepoint just opened on the
+// outer tx). Use it when fn must pass the raw tx to a third-party component
+// that takes a pgx.Tx directly; otherwise prefer InTx.
+func (e *PgxConnExecutor) WithTx(
+	ctx context.Context,
+	fn func(ctx context.Context, tx pgx.Tx) error,
+	opts ...PgxOpt,
+) error {
+	return pgxWithTx(ctx, e.Conn.BeginTx, fn, opts...)
+}
+
 func (e *PgxConnExecutor) Exec(
 	ctx context.Context,
 	sql string,

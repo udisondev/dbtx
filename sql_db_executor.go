@@ -31,6 +31,19 @@ func (e *SQLDBExecutor) InTx(
 	return sqlInTx(ctx, e.DB.BeginTx, fn, opts...)
 }
 
+// WithTx is InTx that also hands the active *sql.Tx to fn — the one it just
+// stashed in ctx, or the existing one when nested (database/sql has no
+// portable savepoint API, so a nested call reuses the outer tx). Use it when
+// fn must pass the raw tx to a third-party component that takes *sql.Tx
+// directly; otherwise prefer InTx.
+func (e *SQLDBExecutor) WithTx(
+	ctx context.Context,
+	fn func(ctx context.Context, tx *sql.Tx) error,
+	opts ...SQLOpt,
+) error {
+	return sqlWithTx(ctx, e.DB.BeginTx, fn, opts...)
+}
+
 func (e *SQLDBExecutor) ExecContext(
 	ctx context.Context,
 	query string,
