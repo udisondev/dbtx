@@ -83,3 +83,25 @@ func (e *SQLDBExecutor) PrepareContext(ctx context.Context, query string) (*sql.
 	}
 	return e.DB.PrepareContext(ctx, query)
 }
+
+// Exec is the database/sql legacy API. It runs against the embedded *sql.DB
+// with context.Background() and does NOT route through a tx stashed in
+// context — there is no ctx to read from. Use it only for code that needs a
+// *sql.DB-shaped surface and is not transactional. Inside an InTx/WithTx,
+// prefer ExecContext, or hand the *sql.Tx from WithTx straight to the
+// caller.
+func (e *SQLDBExecutor) Exec(query string, args ...any) (sql.Result, error) {
+	return e.DB.Exec(query, args...)
+}
+
+// Query is the database/sql legacy API. Same caveat as Exec: no ctx, no tx
+// routing.
+func (e *SQLDBExecutor) Query(query string, args ...any) (*sql.Rows, error) {
+	return e.DB.Query(query, args...)
+}
+
+// QueryRow is the database/sql legacy API. Same caveat as Exec: no ctx, no
+// tx routing.
+func (e *SQLDBExecutor) QueryRow(query string, args ...any) *sql.Row {
+	return e.DB.QueryRow(query, args...)
+}

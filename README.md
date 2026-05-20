@@ -329,6 +329,30 @@ err := exec.WithTx(ctx, func(ctx context.Context, tx *sql.Tx) error {
 
 `WithTx` is part of the `PgxTxExecutor` / `SqlTxExecutor` interfaces, so services can depend on the narrow surface and still hand a tx to whatever needs one.
 
+### Legacy `database/sql` API on the SQL executors
+
+For interop with libraries that expect a `*sql.DB`-shaped surface, both SQL executors also expose the non-context methods:
+
+```go
+Exec(query string, args ...any) (sql.Result, error)
+Query(query string, args ...any) (*sql.Rows, error)
+QueryRow(query string, args ...any) *sql.Row
+```
+
+`*SQLDBExecutor` delegates to the embedded `*sql.DB`; `*SQLConnExecutor` delegates to the embedded `*sql.Conn` with `context.Background()` (since `*sql.Conn` has no non-ctx API of its own).
+
+**Caveat — these methods do NOT participate in transaction routing.** There is no `ctx` to read a stashed tx from, so calls go straight to the underlying `DB` / `Conn` and bypass any active `InTx` / `WithTx`. Use them only when the caller is non-transactional (e.g. a legacy library that owns its own connection lifecycle). If you need the legacy shape *inside* a transaction, get the `*sql.Tx` from `WithTx` and hand that to the caller — `*sql.Tx` exposes the same three methods natively and is properly scoped to the transaction:
+
+```go
+exec.WithTx(ctx, func(ctx context.Context, tx *sql.Tx) error {
+    return legacyThing.Run(tx) // legacyThing calls tx.Exec / tx.Query / tx.QueryRow
+})
+```
+
+These methods are not part of the `SQLConn` interface — adding them would break the compile-time guarantee that `*sql.Conn` satisfies `SQLConn` (it has only the `*Context` variants). They live on the concrete executor types.
+
+The pgx side has no equivalent: pgx requires a `context.Context` on every data-access method, so there is no "legacy" surface to mirror.
+
 ## Testing
 
 The library is tested against a real Postgres via [testcontainers-go](https://golang.testcontainers.org/) using `testify/suite`. See `pgx_tx_test.go` and `sql_tx_test.go` for the layout: one shared `postgres:16-alpine` container per test package, separate tables per suite for parallel safety, `TRUNCATE` between tests.
