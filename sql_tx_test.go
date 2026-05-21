@@ -139,14 +139,13 @@ func (s *SQLSuite) TestExecRoutedThroughTx() {
 }
 
 func (s *SQLSuite) TestIsolationOption() {
-	exec := dbtx.NewSQLDBExecutor(s.db, dbtx.SQLWithIsolationLevel(sql.LevelSerializable))
-	err := exec.InTx(s.ctx, func(ctx context.Context) error {
+	err := s.exec.InTx(s.ctx, func(ctx context.Context) error {
 		var iso string
-		scanErr := exec.QueryRowContext(ctx, "SHOW transaction_isolation").Scan(&iso)
+		scanErr := s.exec.QueryRowContext(ctx, "SHOW transaction_isolation").Scan(&iso)
 		s.Require().NoError(scanErr)
 		s.Equal("serializable", iso)
 		return nil
-	})
+	}, dbtx.SQLWithIsolationLevel(sql.LevelSerializable))
 	s.Require().NoError(err)
 }
 

@@ -6,10 +6,8 @@ import (
 	"fmt"
 )
 
-// SQLOpt configures the database/sql transaction options held by an executor.
-// Apply at construction time (NewSQLDBExecutor / NewSQLConnExecutor); the same
-// options are reused on every top-level InTx / WithTx opened through the
-// executor.
+// SQLOpt configures the sql.TxOptions used for a top-level transaction opened
+// by InTx / WithTx. Nested calls reuse the outer tx and ignore opts.
 type SQLOpt func(*sql.TxOptions)
 
 type sqlTxKey struct{}

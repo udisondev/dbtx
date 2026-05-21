@@ -143,14 +143,13 @@ func (s *PgxSuite) TestExecRoutedThroughTx() {
 }
 
 func (s *PgxSuite) TestIsolationOption() {
-	exec := dbtx.NewPgxPoolExecutor(s.pool, dbtx.WithIsolationLevel(pgx.Serializable))
-	err := exec.InTx(s.ctx, func(ctx context.Context) error {
+	err := s.exec.InTx(s.ctx, func(ctx context.Context) error {
 		var iso string
-		scanErr := exec.QueryRow(ctx, "SHOW transaction_isolation").Scan(&iso)
+		scanErr := s.exec.QueryRow(ctx, "SHOW transaction_isolation").Scan(&iso)
 		s.Require().NoError(scanErr)
 		s.Equal("serializable", iso)
 		return nil
-	})
+	}, dbtx.WithIsolationLevel(pgx.Serializable))
 	s.Require().NoError(err)
 }
 

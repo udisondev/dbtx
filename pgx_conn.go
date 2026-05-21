@@ -22,12 +22,10 @@ type PgxConn interface {
 }
 
 // PgxTxExecutor is the narrow surface a service holds to manage transaction
-// boundaries. Repositories use PgxConn instead. Transaction options are baked
-// into the executor at construction time (see NewPgxPoolExecutor /
-// NewPgxConnExecutor), so this interface stays free of pgx-specific types.
+// boundaries. Repositories use PgxConn instead.
 type PgxTxExecutor interface {
-	InTx(ctx context.Context, fn func(ctx context.Context) error) error
-	WithTx(ctx context.Context, fn func(ctx context.Context, tx pgx.Tx) error) error
+	InTx(ctx context.Context, fn func(ctx context.Context) error, opts ...PgxOpt) error
+	WithTx(ctx context.Context, fn func(ctx context.Context, tx pgx.Tx) error, opts ...PgxOpt) error
 }
 
 var (

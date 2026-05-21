@@ -9,10 +9,8 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// PgxOpt configures the pgx transaction options held by an executor. Apply at
-// construction time (NewPgxPoolExecutor / NewPgxConnExecutor); the same
-// options are reused on every top-level InTx / WithTx opened through the
-// executor.
+// PgxOpt configures the pgx.TxOptions used for a top-level transaction
+// opened by InTx / WithTx. Nested calls open a savepoint and ignore opts.
 type PgxOpt func(*pgx.TxOptions)
 
 type pgxTxKey struct{}

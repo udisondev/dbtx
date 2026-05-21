@@ -43,9 +43,9 @@ The result: repository signatures don't know transactions exist, service code re
 
 Three rules to remember:
 
-1. **Repositories** depend on a narrow query interface they actually use — defined in the repository's own package (idiomatic Go). For a quick start, the library-exported `dbtx.PgxConn` / `dbtx.SQLConn` are full supersets you can plug in directly. Either way, repositories never see a `tx`.
-2. **Services** depend on a narrow tx-boundary interface they actually use (`InTx` and, when needed, `WithTx`) — also defined locally on the consumer side. The library's `dbtx.PgxTxExecutor` / `dbtx.SqlTxExecutor` are the same shape if you'd rather not redeclare them. In tests this is trivially fake-able (a no-op stub or one that just calls `fn(ctx)`).
-3. **The concrete executor** (`*PgxPoolExecutor`, `*SQLDBExecutor`, `*PgxConnExecutor`, `*SQLConnExecutor`) covers both surfaces at once. Construct it once at wiring, hand the same value to the service (as a `TxRunner`-like interface) and the repository (as a query interface). No service-layer code imports `dbtx` unless you want it to.
+1. **Repositories** depend on a narrow query interface — either declared locally or the library-provided supersets `dbtx.PgxConn` / `dbtx.SQLConn`. Never a `tx`.
+2. **Services** depend on a `func(ctx, fn) error` field that the wiring layer fills with a closure calling the executor's `InTx`, with any default opts baked in. To pass opts per call, depend on `dbtx.PgxTxExecutor` / `dbtx.SqlTxExecutor` instead.
+3. **The concrete executor** (`*PgxPoolExecutor`, `*SQLDBExecutor`, `*PgxConnExecutor`, `*SQLConnExecutor`) satisfies both surfaces. One value, handed to the service as a tx runner and to the repository as a query interface.
 
 ## Quick example (pgx)
 
@@ -78,20 +78,17 @@ func (r *UserRepo) Insert(ctx context.Context, id, name string) error {
 }
 
 // ── Service ────────────────────────────────────────────
-// Owns transactional boundaries via a narrow TxRunner interface defined on
-// the service side — no dbtx or pgx types in the dependency.
-
-type TxRunner interface {
-    InTx(ctx context.Context, fn func(ctx context.Context) error) error
-}
+// Owns transactional boundaries. The inTx field is a plain function value —
+// the wiring layer fills it with a closure carrying whatever tx options it
+// wants. The service package doesn't import dbtx or pgx at all.
 
 type UserService struct {
-    tx    TxRunner
+    inTx  func(ctx context.Context, fn func(ctx context.Context) error) error
     users *UserRepo
 }
 
 func (s *UserService) Create(ctx context.Context, id, name string) error {
-    return s.tx.InTx(ctx, func(ctx context.Context) error {
+    return s.inTx(ctx, func(ctx context.Context) error {
         return s.users.Insert(ctx, id, name)
         // any other repo call here joins the same tx automatically
     })
@@ -103,18 +100,22 @@ func main() {
     pool, _ := pgxpool.New(context.Background(), os.Getenv("DATABASE_URL"))
     defer pool.Close()
 
-    db := dbtx.NewPgxPoolExecutor(pool) // satisfies userExecer and TxRunner
+    db := dbtx.NewPgxPoolExecutor(pool) // satisfies userExecer
 
     svc := &UserService{
-        tx:    db,                 // service sees only the InTx surface
-        users: &UserRepo{db: db},  // repo sees the data-access surface
+        // Bind InTx with whatever default opts this service should run with
+        // (none here; add dbtx.WithIsolationLevel(...) etc. as needed).
+        inTx: func(ctx context.Context, fn func(ctx context.Context) error) error {
+            return db.InTx(ctx, fn)
+        },
+        users: &UserRepo{db: db}, // repo sees the data-access surface
     }
 
     _ = svc.Create(context.Background(), "u-1", "Alice")
 }
 ```
 
-The same `db` is wired into `UserService` (as a `TxRunner`) and into `UserRepo` (as a `userExecer`). The service package doesn't import `dbtx` or `pgx` at all — its dependencies are stated in its own narrow interfaces, and any test double matching them works. If you'd rather skip declaring those interfaces yourself, swap them for `dbtx.PgxTxExecutor` and `dbtx.PgxConn`.
+The same `db` is wired into `UserService` (as a tx-runner closure) and into `UserRepo` (as a `userExecer`). The service package doesn't import `dbtx` or `pgx`. To skip the closure and let the service see `dbtx.PgxOpt`, type the field as `dbtx.PgxTxExecutor` and assign `db` directly.
 
 ## Nested transactions across multiple services
 
@@ -127,14 +128,9 @@ Each service is independently useful and is itself transactional — when called
 
 With dbtx the orchestrator just wraps both services in another `InTx`. The inner `InTx`-es detect the outer tx in `ctx` and join it (via savepoint).
 
-For brevity, this example uses one shared `TxRunner` interface across the wallet, ledger, and transfer layers (in production each would declare its own in its own package). Repositories keep the convenience superset `dbtx.PgxConn` to avoid repeating five-method interfaces — substitute a narrow local interface there too if you prefer.
+For brevity, services here keep a plain `func(ctx, fn) error` field for the tx boundary (the wiring layer binds whatever defaults it wants); repositories keep the convenience superset `dbtx.PgxConn` to avoid repeating five-method interfaces.
 
 ```go
-// Defined where it's consumed. No dbtx / pgx types in service signatures.
-type TxRunner interface {
-    InTx(ctx context.Context, fn func(ctx context.Context) error) error
-}
-
 // ── Wallet ─────────────────────────────────────────────
 
 type WalletRepo struct{ db dbtx.PgxConn }
@@ -151,12 +147,12 @@ func (r *WalletRepo) SetBalance(ctx context.Context, id string, v int64) error {
 }
 
 type WalletService struct {
-    tx      TxRunner
+    inTx    func(ctx context.Context, fn func(ctx context.Context) error) error
     wallets *WalletRepo
 }
 
 func (s *WalletService) Debit(ctx context.Context, id string, amount int64) error {
-    return s.tx.InTx(ctx, func(ctx context.Context) error {
+    return s.inTx(ctx, func(ctx context.Context) error {
         bal, err := s.wallets.Balance(ctx, id)
         if err != nil {
             return err
@@ -169,7 +165,7 @@ func (s *WalletService) Debit(ctx context.Context, id string, amount int64) erro
 }
 
 func (s *WalletService) Credit(ctx context.Context, id string, amount int64) error {
-    return s.tx.InTx(ctx, func(ctx context.Context) error {
+    return s.inTx(ctx, func(ctx context.Context) error {
         bal, err := s.wallets.Balance(ctx, id)
         if err != nil {
             return err
@@ -190,12 +186,12 @@ func (r *LedgerRepo) Append(ctx context.Context, from, to string, amount int64) 
 }
 
 type LedgerService struct {
-    tx      TxRunner
+    inTx    func(ctx context.Context, fn func(ctx context.Context) error) error
     entries *LedgerRepo
 }
 
 func (s *LedgerService) Record(ctx context.Context, from, to string, amount int64) error {
-    return s.tx.InTx(ctx, func(ctx context.Context) error {
+    return s.inTx(ctx, func(ctx context.Context) error {
         return s.entries.Append(ctx, from, to, amount)
     })
 }
@@ -203,13 +199,13 @@ func (s *LedgerService) Record(ctx context.Context, from, to string, amount int6
 // ── Orchestrator: one tx across both services ──────────
 
 type TransferUseCase struct {
-    tx      TxRunner
+    inTx    func(ctx context.Context, fn func(ctx context.Context) error) error
     wallets *WalletService
     ledger  *LedgerService
 }
 
 func (uc *TransferUseCase) Transfer(ctx context.Context, from, to string, amount int64) error {
-    return uc.tx.InTx(ctx, func(ctx context.Context) error {
+    return uc.inTx(ctx, func(ctx context.Context) error {
         if err := uc.wallets.Debit(ctx, from, amount); err != nil {
             return err
         }
@@ -219,6 +215,22 @@ func (uc *TransferUseCase) Transfer(ctx context.Context, from, to string, amount
         return uc.ledger.Record(ctx, from, to, amount)
     })
 }
+```
+
+At wiring time each service gets its own closure — same executor, different default opts if needed:
+
+```go
+db := dbtx.NewPgxPoolExecutor(pool)
+
+bind := func(opts ...dbtx.PgxOpt) func(context.Context, func(context.Context) error) error {
+    return func(ctx context.Context, fn func(context.Context) error) error {
+        return db.InTx(ctx, fn, opts...)
+    }
+}
+
+wallets := &WalletService{inTx: bind(dbtx.WithIsolationLevel(pgx.Serializable)), wallets: walletRepo}
+ledger  := &LedgerService{inTx: bind(), entries: ledgerRepo}
+uc      := &TransferUseCase{inTx: bind(dbtx.WithIsolationLevel(pgx.Serializable)), wallets: wallets, ledger: ledger}
 ```
 
 ### What happens at runtime
@@ -251,41 +263,36 @@ import (
 )
 
 db, _ := sql.Open("pgx", dsn)
-exec := dbtx.NewSQLDBExecutor(db, dbtx.SQLWithIsolationLevel(sql.LevelSerializable))
-// implements SQLConn and SqlTxExecutor
+exec := dbtx.NewSQLDBExecutor(db) // implements SQLConn and SqlTxExecutor
 
 err := exec.InTx(ctx, func(ctx context.Context) error {
     _, err := exec.ExecContext(ctx, "INSERT INTO users (id, name) VALUES ($1, $2)", "u-1", "Alice")
     return err
-})
+}, dbtx.SQLWithIsolationLevel(sql.LevelSerializable))
 ```
 
 One semantic difference: `database/sql` has no portable savepoint API, so a nested `InTx` does **not** open a savepoint — it reuses the existing transaction. The orchestrator pattern still works (everything still ends up in one tx), but you lose the ability to roll back just the inner step. An error from any inner `InTx` aborts the whole tx.
 
 ## Transaction options
 
-Options are configured **on the executor at construction time** and reused on every top-level `InTx` / `WithTx`. The service-facing `PgxTxExecutor` / `SqlTxExecutor` interfaces stay free of pgx / `database/sql` types — services just see `InTx(ctx, fn)`.
-
-pgx — wraps `pgx.TxOptions`:
+Options are passed at the call site, as variadic arguments to `InTx` / `WithTx`:
 
 ```go
-exec := dbtx.NewPgxPoolExecutor(pool,
+exec.InTx(ctx, fn,
     dbtx.WithIsolationLevel(pgx.Serializable),
     dbtx.WithAccessMode(pgx.ReadWrite),
     dbtx.WithDeferrableMode(pgx.Deferrable),
 )
-```
 
-`database/sql` — wraps `sql.TxOptions`:
-
-```go
-exec := dbtx.NewSQLDBExecutor(db,
+exec.InTx(ctx, fn,
     dbtx.SQLWithIsolationLevel(sql.LevelSerializable),
     dbtx.SQLWithReadOnly(true),
 )
 ```
 
-Default isolation is `ReadCommitted` on both sides. Nested calls don't take options — for pgx, savepoints don't accept `TxOptions`; for `database/sql`, the outer tx is already open. If you need different transaction profiles in the same wiring (e.g. one service Serializable, another ReadCommitted), construct multiple executors over the same underlying pool/DB and inject the right one into each service.
+Default isolation is `ReadCommitted` on both sides when no opts are given. Nested calls ignore opts — for pgx, savepoints don't accept `TxOptions`; for `database/sql`, the outer tx is already open.
+
+To give a service a fixed set of opts without leaking them into its type signature, bind them in the wiring closure (see the orchestrator example above). The service depends on a plain `func(ctx, fn) error`; the wiring decides what runs underneath.
 
 ## Why `PgxConn` / `SQLConn` exist (and what they let you do)
 
@@ -311,9 +318,7 @@ type UserRepo struct {
 }
 ```
 
-you can plug in either the raw pool or the executor without changing the type. No magic, no codegen — just an interface picked to fit existing surfaces.
-
-Use it when your repository touches most of that surface and you'd rather not maintain a per-repo interface. For narrow repos (one or two methods), declare your own interface on the consumer side — `*PgxPoolExecutor` will still satisfy it because the method set is a subset. The library provides the umbrella interface as convenience; it never imposes itself on your types.
+you can plug in either the raw pool or the executor without changing the type. Use `PgxConn` / `SQLConn` when your repository touches most of that surface; declare a narrower local interface when it touches one or two methods (`*PgxPoolExecutor` satisfies any subset).
 
 ## Direct tx access
 
@@ -327,7 +332,7 @@ exec.InTx(ctx, func(ctx context.Context) error {
 })
 ```
 
-The reverse helpers `dbtx.WithTx(ctx, tx) ctx` and `dbtx.SQLWithTx(ctx, tx) ctx` go the other way — they put an existing `tx` into ctx so that downstream code reading via dbtx-aware executors routes through it. Useful in tests (hand-craft a ctx with a test tx) and at the boundary with code that already opened its own transaction. They are package-level functions and are separate from the `WithTx` *method* documented below; both names coexist because their signatures don't overlap.
+The reverse helpers `dbtx.WithTx(ctx, tx) ctx` and `dbtx.SQLWithTx(ctx, tx) ctx` put an existing `tx` into ctx so that downstream code routes through it. Useful in tests and at the boundary with code that already opened its own transaction. These are package-level functions — distinct from the `WithTx` *method* on the executor (different signature, different purpose).
 
 ### `WithTx`: same as `InTx`, but hands the tx to the closure
 
@@ -342,7 +347,7 @@ err := exec.WithTx(ctx, func(ctx context.Context, tx pgx.Tx) error {
 })
 ```
 
-Same semantics as `InTx`: nested calls join the outer tx, fn's error rolls back, nil commits, options come from the executor's construction. Reach for `WithTx` only when the explicit `tx` argument is required; otherwise stick to `InTx` and keep call sites tx-agnostic.
+Same semantics as `InTx`: nested calls join the outer tx, fn's error rolls back, nil commits, opts (variadic, same as `InTx`) apply only to the top-level call and are ignored when nested. Reach for `WithTx` only when the explicit `tx` argument is required; otherwise stick to `InTx` and keep call sites tx-agnostic.
 
 The `database/sql` form mirrors it:
 
@@ -352,7 +357,7 @@ err := exec.WithTx(ctx, func(ctx context.Context, tx *sql.Tx) error {
 })
 ```
 
-`WithTx` is exposed by the same executor that provides `InTx`. A service-side interface can pair the two — but note that `WithTx`'s callback receives a `pgx.Tx` / `*sql.Tx` by design, so a caller using it accepts that one driver type into its signature. If you want to keep service code fully driver-agnostic, stick to `InTx`. Pre-baked shapes are `dbtx.PgxTxExecutor` and `dbtx.SqlTxExecutor`.
+A service consuming `WithTx` accepts the driver's `pgx.Tx` / `*sql.Tx` into its signature. To keep services driver-agnostic, stick to `InTx`. The library-provided shapes that pair both are `dbtx.PgxTxExecutor` and `dbtx.SqlTxExecutor`.
 
 ### Legacy `database/sql` API on the SQL executors
 
@@ -374,9 +379,9 @@ exec.WithTx(ctx, func(ctx context.Context, tx *sql.Tx) error {
 })
 ```
 
-These methods are not part of the `SQLConn` interface — adding them would break the compile-time guarantee that `*sql.Conn` satisfies `SQLConn` (it has only the `*Context` variants). They live on the concrete executor types.
+These methods live on the concrete executor types, not on the `SQLConn` interface (`*sql.Conn` lacks the non-context variants).
 
-The pgx side has no equivalent: pgx requires a `context.Context` on every data-access method, so there is no "legacy" surface to mirror.
+The pgx side has no equivalent — pgx requires a `context.Context` on every data-access method.
 
 ## Testing
 
@@ -392,7 +397,7 @@ If Docker isn't available, both suites self-skip with a clear message instead of
 
 ## Status
 
-Single-purpose library, small surface, no external moving parts beyond pgx / `database/sql`. The shape is set; future changes will be additive only.
+Single-purpose library, small surface, no external moving parts beyond pgx / `database/sql`.
 
 ## License
 

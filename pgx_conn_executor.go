@@ -12,26 +12,25 @@ import (
 // explicit bypass.
 type PgxConnExecutor struct {
 	*pgx.Conn
-	txOpts pgx.TxOptions
 }
 
 var _ PgxConn = (*PgxConnExecutor)(nil)
 
-// NewPgxConnExecutor wraps conn. The opts configure the pgx.TxOptions used
-// for every top-level transaction opened via InTx / WithTx (nested calls open
-// a savepoint and ignore options). Default isolation is pgx.ReadCommitted.
-func NewPgxConnExecutor(conn *pgx.Conn, opts ...PgxOpt) *PgxConnExecutor {
-	return &PgxConnExecutor{Conn: conn, txOpts: buildPgxTxOptions(opts)}
+// NewPgxConnExecutor wraps conn.
+func NewPgxConnExecutor(conn *pgx.Conn) *PgxConnExecutor {
+	return &PgxConnExecutor{Conn: conn}
 }
 
 // InTx runs fn in a transaction. If ctx carries a tx, fn runs in a savepoint
-// on it; otherwise a new top-level tx is opened with the options the executor
-// was configured with. fn's error triggers rollback, nil triggers commit.
+// on it (opts ignored); otherwise a new top-level tx is opened with opts.
+// Default isolation is pgx.ReadCommitted. fn's error triggers rollback, nil
+// triggers commit.
 func (e *PgxConnExecutor) InTx(
 	ctx context.Context,
 	fn func(ctx context.Context) error,
+	opts ...PgxOpt,
 ) error {
-	return pgxInTx(ctx, e.Conn.BeginTx, e.txOpts, fn)
+	return pgxInTx(ctx, e.Conn.BeginTx, buildPgxTxOptions(opts), fn)
 }
 
 // WithTx is InTx that also hands the active pgx.Tx to fn — the same one it
@@ -41,8 +40,9 @@ func (e *PgxConnExecutor) InTx(
 func (e *PgxConnExecutor) WithTx(
 	ctx context.Context,
 	fn func(ctx context.Context, tx pgx.Tx) error,
+	opts ...PgxOpt,
 ) error {
-	return pgxWithTx(ctx, e.Conn.BeginTx, e.txOpts, fn)
+	return pgxWithTx(ctx, e.Conn.BeginTx, buildPgxTxOptions(opts), fn)
 }
 
 func (e *PgxConnExecutor) Exec(

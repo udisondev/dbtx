@@ -17,13 +17,10 @@ type SQLConn interface {
 }
 
 // SqlTxExecutor is the narrow surface a service holds to manage transaction
-// boundaries. Repositories use SQLConn instead. Transaction options are baked
-// into the executor at construction time (see NewSQLDBExecutor /
-// NewSQLConnExecutor), so this interface stays free of database/sql-specific
-// types.
+// boundaries. Repositories use SQLConn instead.
 type SqlTxExecutor interface {
-	InTx(ctx context.Context, fn func(ctx context.Context) error) error
-	WithTx(ctx context.Context, fn func(ctx context.Context, tx *sql.Tx) error) error
+	InTx(ctx context.Context, fn func(ctx context.Context) error, opts ...SQLOpt) error
+	WithTx(ctx context.Context, fn func(ctx context.Context, tx *sql.Tx) error, opts ...SQLOpt) error
 }
 
 var (
